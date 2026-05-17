@@ -1,0 +1,160 @@
+ Plan — Implement Task 1 from "Symulacja zadanie 1.docx"
+
+ Context
+
+ The brief (Polish, Symulacja zadanie 1.docx) is a single task: build a simulation model of an epidemic in a herd of 488 animals, observed over discrete "umowne
+ jednostki czasu" (u.j.c.) and submitted as an Excel workbook.
+
+ Key dynamics:
+
+ - Disease: two infectious phases — ca (asymptomatic carrier) → cb (symptomatic). Each phase lasts exactly 1 tick. Phase 2 ends in recovery → 1 tick temp immunity
+ (o) or death.
+ - Demographics: animals age each tick; mean lifespan 6 u.j.c. (σ ≈ 1). Reproduction starts at age 2.
+ - Age-banded birth rates (per tick, applied to N of cohort): ages 2–4 → ~N(0.15, 0.02), ages 5+ → ~N(0.10, 0.01).
+ - Age-banded disease mortality (P(die | in cb at end of tick)): ages 1–3 → ~N(0.20, 0.05), ages 4–5 → ~N(0.30, 0.07), ages 6+ → ~N(0.50, 0.15).
+ - Vertical transmission: P(newborn is sick) = (ca+cb)/N of parent cohort.
+ - Initial state (sum = 488):
+
+ | age |   z |   o |  ca |  cb |
+ |-----|-----|-----|-----|-----|
+ | 1   |  60 |  20 |  10 |  10 |
+ | 2   |  60 |  30 |  10 |  20 |
+ | 3   |  70 |  10 |   5 |  10 |
+ | 4   |  60 |  10 |  10 |   5 |
+ | 5   |  20 |  20 |   7 |   3 |
+ | 6   |  10 |   5 |   6 |   4 |
+ | 7   |  10 |   0 |   0 |   3 |
+
+
+ User decisions for this implementation: new Excel workbook, Monte Carlo (stochastic), ~30 ticks, leave the existing uproszczony model epidemii.xlsx untouched.
+
+ The reference workbook is aggregate (no age dimension, no reproduction, no age-banded mortality), so it can't be incrementally extended — the new file is
+ structurally different. We do, however, preserve its naming convention (z, o, ca, cb, pz, sz, …) and its system-dynamics recurrence shape (slides 9–11 of the
+ .pptx) per age cohort:
+
+ z(a, t+1)  = z(a-1, t) + o(a-1, t) − pca(a-1, t+1) − natural_deaths
+ ca(a, t+1) = pca(a-1, t+1)                        − natural_deaths
+ cb(a, t+1) = ca(a-1, t)                           − natural_deaths
+ o(a, t+1)  = cb(a-1, t) − pu(a-1, t+1)            − natural_deaths
+ u(t+1)     = u(t) + Σ pu + Σ natural_deaths
+
+ Newborns enter cohort a=1 at t+1 with healthy / phase-1-sick split.
+
+ Deliverables
+
+ 1. model epidemii (kohorty wiekowe).xlsx — new workbook in the repo root, alongside the existing one.
+ 2. build_model.py — Python build script using openpyxl that authors the workbook from declarative parameters (kept in the repo so a future change to ± tolerances
+ or initial state is a one-line edit + re-run). Treat the script as a build artifact, not a runtime — the actual simulation lives in workbook formulas.
+
+ Workbook structure
+
+ Eight sheets. Row/column convention is identical across the four compartment sheets so cross-sheet sums work without offsets (row 2 = t=0, row 32 = t=30; col B =
+ age 1, col K = age 10).
+
+ ┌────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │   Sheet    │                                                                     Purpose                                                                     │
+ ├────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │            │ Parameter block: ± tolerances per age band, h_nat(a) hazard table for a=1..10 (conditional hazard from N(6, 1) CDF, capped at h(10)=1), initial │
+ │ Założenia  │  state table, simulation horizon, brief order-of-operations diagram. Single source of truth — every formula elsewhere references named ranges   │
+ │            │ here.                                                                                                                                           │
+ ├────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ z          │ Susceptible counts. 31 × 10 grid (t × age). Row 2 seeded from Założenia initial table; rows 3..32 computed.                                     │
+ ├────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ o          │ Temp-immune counts. Same shape.                                                                                                                 │
+ ├────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ ca         │ Phase-1 sick counts. Same shape.                                                                                                                │
+ ├────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ cb         │ Phase-2 sick counts. Same shape.                                                                                                                │
+ ├────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │            │ Per-tick intermediate computations as parallel 31×10 blocks stacked vertically with a labelled header row. One block per quantity: pch(t),      │
+ │ Pomocnicze │ r(a,t), m(a,t), pca(a,t), pu(a,t), births(a,t), sick_births(a,t), nat_deaths_z/o/ca/cb(a,t). Each block is a single shared formula filled       │
+ │            │ across the rectangle.                                                                                                                           │
+ ├────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ Wyniki     │ Per-tick aggregates: Σ z, Σ o, Σ ca, Σ cb, total_alive, cum_deaths, mean_age plus peak/extinction summary. Pure SUM/SUMPRODUCT of compartment   │
+ │            │ sheets — no logic.                                                                                                                              │
+ ├────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │            │ 1-input Data Table with empty Column Input pointed at an unused cell on Założenia. Runs 500 replications. Result columns are formulas in the    │
+ │ MonteCarlo │ header row referencing Wyniki aggregates (total_alive_t30, cum_deaths_t30, peak_infectious, extinction_t). Mean / std / PERCENTILE.INC(5,50,95) │
+ │            │  over the output range below.                                                                                                                   │
+ └────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+ Order of operations within a tick (matches .pptx slides 9–11 + Plan agent's correction)
+
+ For t → t+1, all on per-cohort basis, in this order:
+
+ 1. Snapshot start-of-tick pch(t) = (Σ ca + Σ cb) / total_alive.
+ 2. Draw new infections per cohort: pca(a, t+1) = BINOM.INV(z(a, t), pch(t), RAND()).
+ 3. Disease advance: ca → cb, cb resolves into either death (drawn from age-banded mortality m(a) ~ Normal(μ, σ), applied as Binomial) or recovery → o. o from t
+ expires → returns to z pool.
+ 4. Natural death hazard h_nat(a) applied uniformly across all compartments via Binomial.
+ 5. Age survivors a → a+1. Cohort 10 survivors that would become age 11 are absorbed into deaths (h_nat(10)=1 effectively).
+ 6. Newborns enter cohort 1 at t+1. For each parent cohort a≥2: births(a) = BINOM.INV(N(a, t), r(a) ~ Normal(μ_band, σ_band), RAND()), then sick_births(a) =
+ BINOM.INV(births(a), (ca(a,t)+cb(a,t))/N(a,t), RAND()). Sum across parent cohorts into z(1, t+1) and ca(1, t+1).
+
+ The order is documented as an explicit numbered list on Założenia so the grader can audit it.
+
+ Critical files
+
+ - /Users/szymon/Desktop/zadanie-symulacja/Symulacja zadanie 1.docx — authoritative brief; re-read before coding for exact ± tolerances and the "proporcjonalne do
+ udziału chorych" wording on vertical transmission.
+ - /Users/szymon/Desktop/zadanie-symulacja/Uproszczony model symulacyjny epidemii.pptx — slides 9–11 give the system-dynamics recurrence; slide 11 specifies pca(t)
+  and pu(t) as Normal-perturbed draws. New model preserves this shape per cohort.
+ - /Users/szymon/Desktop/zadanie-symulacja/uproszczony model epidemii.xlsx — naming conventions (z/o/ca/cb/pz/sz/…), reference for shared-formula si style. Not
+ edited.
+ - /Users/szymon/Desktop/zadanie-symulacja/CLAUDE.md — keep Polish column names; do not rename.
+
+ New files:
+ - /Users/szymon/Desktop/zadanie-symulacja/model epidemii (kohorty wiekowe).xlsx
+ - /Users/szymon/Desktop/zadanie-symulacja/build_model.py
+
+ Implementation notes
+
+ - Construction: openpyxl writes formulas as strings; set workbook.calculation.calcMode = 'auto' and fullCalcOnLoad = True so Excel evaluates everything on first
+ open.
+ - Data Table: openpyxl can't author a Data Table cleanly via high-level API. Practical path: build a one-cell .xlsx template by hand in Excel that contains the
+ Data Table skeleton on MonteCarlo, commit it as template.xlsx, then build_model.py loads it and populates everything else. If template assembly proves fiddly,
+ fallback: omit MonteCarlo from the auto-build and document a 5-step manual setup ("Data → What-If Analysis → Data Table → Column input: $A$1 on Założenia") on a
+ MonteCarlo stub sheet.
+ - Calculation mode while building: set Excel to "Automatic Except for Data Tables" in the workbook calcPr — otherwise every recalc triggers all 500 replications.
+
+     Critical files
+
+     - /Users/szymon/Desktop/zadanie-symulacja/Symulacja zadanie 1.docx — authoritative brief; re-read before coding for exact ± tolerances and the "proporcjonalne
+     do udziału chorych" wording on vertical transmission.
+     - /Users/szymon/Desktop/zadanie-symulacja/Uproszczony model symulacyjny epidemii.pptx — slides 9–11 give the system-dynamics recurrence; slide 11 specifies
+     pca(t) and pu(t) as Normal-perturbed draws. New model preserves this shape per cohort.
+     - /Users/szymon/Desktop/zadanie-symulacja/uproszczony model epidemii.xlsx — naming conventions (z/o/ca/cb/pz/sz/…), reference for shared-formula si style. Not
+     edited.
+     - /Users/szymon/Desktop/zadanie-symulacja/CLAUDE.md — keep Polish column names; do not rename.
+
+     New files:
+     - /Users/szymon/Desktop/zadanie-symulacja/model epidemii (kohorty wiekowe).xlsx
+     - /Users/szymon/Desktop/zadanie-symulacja/build_model.py
+
+     Implementation notes
+
+     - Construction: openpyxl writes formulas as strings; set workbook.calculation.calcMode = 'auto' and fullCalcOnLoad = True so Excel evaluates everything on
+     first open.
+     - Data Table: openpyxl can't author a Data Table cleanly via high-level API. Practical path: build a one-cell .xlsx template by hand in Excel that contains the
+      Data Table skeleton on MonteCarlo, commit it as template.xlsx, then build_model.py loads it and populates everything else. If template assembly proves fiddly,
+      fallback: omit MonteCarlo from the auto-build and document a 5-step manual setup ("Data → What-If Analysis → Data Table → Column input: $A$1 on Założenia") on
+      a MonteCarlo stub sheet.
+     - Calculation mode while building: set Excel to "Automatic Except for Data Tables" in the workbook calcPr — otherwise every recalc triggers all 500
+     replications.
+     - Guards: every division by N uses IFERROR(.../N, 0) or MAX(1, N) so empty cohorts don't propagate #DIV/0!. Stochastic draws use MAX(0, MIN(1, NORMINV(…))) to
+     clamp rates to [0,1].
+     - Reproducibility note: pure RAND-based MC is non-reproducible; for the report we record summary stats over 500 reps rather than a fixed seed.
+
+     Verification
+
+     End-to-end check on the produced workbook:
+
+     1. Open the file in Excel; press F9. Verify the simulation runs without #REF! / #DIV/0! / #NUM! anywhere in z, o, ca, cb, Pomocnicze, Wyniki.
+     2. Confirm at t=0: Σ z + Σ o + Σ ca + Σ cb on Wyniki row 2 = 488.
+     3. Confirm at every tick: total_alive(t) + cum_deaths(t) = total_alive(0) + Σ births(0..t) (conservation modulo births).
+     4. Spot-check newborn dynamics: a tick where cohort 3 has 50% sick should produce sick_births / total_births ≈ 0.5 on average.
+     5. Lifespan sanity: with disease turned off (set initial ca = cb = 0 and pca formula to 0), mean age at death across a 30-tick MC sweep should be ≈ 6 with σ
+     ≈ 1. This validates the h_nat(a) table.
+     6. Run the 500-replication MonteCarlo Data Table. Confirm: mean total_alive_t30, σ, p5/p50/p95 all populate; extinction_t is NaN or >30 in the majority of reps
+      (or document the rate of die-outs).
+     7. Open the file in LibreOffice as a portability check — chart should render, totals should match.
